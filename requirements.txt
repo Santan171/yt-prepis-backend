@@ -1,0 +1,7 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.9
+supabase==2.7.4
+youtube-transcript-api==0.6.3
+openai-whisper==20240930
+yt-dlp==2024.9.27
