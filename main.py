@@ -39,51 +39,70 @@ class YoutubeRequest(BaseModel):
 
 @app.post("/api/youtube")
 def transcribe_youtube(req: YoutubeRequest, user=Depends(get_user)):
-    from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
+    from youtube_transcript_api import YouTubeTranscriptApi
     vid = extract_video_id(req.url)
     if not vid:
         raise HTTPException(status_code=400, detail="Neplatne YouTube URL")
     try:
-        used_lang = req.lang
+        tlist = YouTubeTranscriptApi.list_transcripts(vid)
         try:
-            tlist = YouTubeTranscriptApi.list_transcripts(vid)
-            t = tlist.find_transcript([req.lang]) if req.lang != "auto" else next(iter(tlist))
-            used_lang = t.language_code
-            raw = t.fetch()
-            data = [{"text": e.text if hasattr(e,"text") else e.get("text",""), "start": e.start if hasattr(e,"start") else e.get("start",0)} for e in raw]
+            t = tlist.find_transcript([req.lang])
         except Exception:
-            data = YouTubeTranscriptApi.get_transcript(vid)
+            try:
+                t = tlist.find_generated_transcript([req.lang])
+            except Exception:
+                t = next(iter(tlist))
+        used_lang = t.language_code
+        raw = t.fetch()
+        data = []
+        for e in raw:
+            text = e.text if hasattr(e, "text") else e.get("text", "")
+            start = e.start if hasattr(e, "start") else e.get("start", 0)
+            data.append({"text": text, "start": start})
         lines, prev = [], ""
         for e in data:
-            txt = e.get("text","").replace("\n"," ").strip()
-            st = e.get("start",0)
-            if not txt or (req.deduplicate and txt == prev): continue
+            txt = e["text"].replace("\n", " ").strip()
+            st = e["start"]
+            if not txt or (req.deduplicate and txt == prev):
+                continue
             prev = txt
             if req.timestamps:
-                h,m,s = int(st//3600),int((st%3600)//60),int(st%60)
-                lines.append(f"[{h}:{m:02d}:{s:02d} if h else f{m:02d}:{s:02d}] {txt}")
+                h, m, s = int(st//3600), int((st%3600)//60), int(st%60)
+                ts = f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+                lines.append(f"[{ts}] {txt}")
             else:
                 lines.append(txt)
         content = "\n".join(lines)
-        supabase.table("transcripts").insert({"id": str(uuid.uuid4()), "user_id": user.id, "title": f"YouTube - {vid}", "content": content, "source": req.url, "language": used_lang}).execute()
+        supabase.table("transcripts").insert({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id,
+            "title": f"YouTube - {vid}",
+            "content": content,
+            "source": req.url,
+            "language": used_lang,
+        }).execute()
         return {"content": content, "language": used_lang, "segments": len(lines)}
-    except HTTPException: raise
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/history")
 def get_history(user=Depends(get_user)):
-    return supabase.table("transcripts").select("id,title,source,language,created_at").eq("user_id",user.id).order("created_at",desc=True).execute().data
+    return supabase.table("transcripts").select("id,title,source,language,created_at").eq("user_id", user.id).order("created_at", desc=True).execute().data
 
 @app.get("/api/history/{tid}")
 def get_transcript(tid: str, user=Depends(get_user)):
-    res = supabase.table("transcripts").select("*").eq("id",tid).eq("user_id",user.id).single().execute()
-    if not res.data: raise HTTPException(status_code=404, detail="Nenajdene")
+    res = supabase.table("transcripts").select("*").eq("id", tid).eq("user_id", user.id).single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Nenajdene")
     return res.data
 
 @app.delete("/api/history/{tid}")
 def delete_transcript(tid: str, user=Depends(get_user)):
-    supabase.table("transcripts").delete().eq("id",tid).eq("user_id",user.id).execute()
+    supabase.table("transcripts").delete().eq("id", tid).eq("user_id", user.id).execute()
     return {"ok": True}
 
 @app.get("/health")
-def health(): return {"status": "ok"}
+def health():
+    return {"status": "ok"}
