@@ -40,11 +40,21 @@ class YoutubeRequest(BaseModel):
 @app.post("/api/youtube")
 def transcribe_youtube(req: YoutubeRequest, user=Depends(get_user)):
     from youtube_transcript_api import YouTubeTranscriptApi
+    from youtube_transcript_api.proxies import WebshareProxyConfig
+
     vid = extract_video_id(req.url)
     if not vid:
         raise HTTPException(status_code=400, detail="Neplatne YouTube URL")
     try:
-        tlist = YouTubeTranscriptApi.list_transcripts(vid)
+        # Try without proxy first, then handle errors
+        try:
+            tlist = YouTubeTranscriptApi.list_transcripts(vid)
+        except Exception as e:
+            err = str(e)
+            if "no element found" in err or "Too Many Requests" in err or "429" in err:
+                raise HTTPException(status_code=503, detail="YouTube dočasne blokuje server. Skús znova o pár minút.")
+            raise
+
         try:
             t = tlist.find_transcript([req.lang])
         except Exception:
@@ -52,6 +62,7 @@ def transcribe_youtube(req: YoutubeRequest, user=Depends(get_user)):
                 t = tlist.find_generated_transcript([req.lang])
             except Exception:
                 t = next(iter(tlist))
+
         used_lang = t.language_code
         raw = t.fetch()
         data = []
@@ -59,6 +70,7 @@ def transcribe_youtube(req: YoutubeRequest, user=Depends(get_user)):
             text = e.text if hasattr(e, "text") else e.get("text", "")
             start = e.start if hasattr(e, "start") else e.get("start", 0)
             data.append({"text": text, "start": start})
+
         lines, prev = [], ""
         for e in data:
             txt = e["text"].replace("\n", " ").strip()
@@ -72,6 +84,7 @@ def transcribe_youtube(req: YoutubeRequest, user=Depends(get_user)):
                 lines.append(f"[{ts}] {txt}")
             else:
                 lines.append(txt)
+
         content = "\n".join(lines)
         supabase.table("transcripts").insert({
             "id": str(uuid.uuid4()),
